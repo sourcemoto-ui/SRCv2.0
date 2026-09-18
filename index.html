@@ -5111,7 +5111,9 @@ ${JSON.stringify(catalogSummary)}
 
         const RemindersView = ({ customers, setCustomers, records, shopInfo, gasUrl, isCloudEnabled, showAlert }) => {
 
-            const [filterTab, setFilterTab] = useState('oil');
+            const [filterTab, setFilterTab] = useState('all');
+
+            const [searchTerm, setSearchTerm] = useState('');
 
             const [sendingId, setSendingId] = useState(null);
 
@@ -5137,73 +5139,145 @@ ${JSON.stringify(catalogSummary)}
 
             const reminderList = useMemo(() => {
 
-                return customers.map(c => {
+                return (customers || []).map(c => {
 
-                    const lastRecs = records.filter(r => r.plate && String(r.plate).toUpperCase() === String(c.plate).toUpperCase() && r.status === 'completed').sort((a, b) => parseDateSafe(b.timestamp || b.date) - parseDateSafe(a.timestamp || a.date));
+                    const cPlate = String(c?.plate || '').toUpperCase();
 
-                    const lastRec = lastRecs[0];
+                    const carRecords = (records || [])
 
-                    const lastDate = lastRec ? parseDateSafe(lastRec.timestamp || lastRec.date) : parseDateSafe(c.lastVisit);
+                        .filter(r => r && r.plate && String(r.plate).toUpperCase() === cPlate && r.status === 'completed')
 
-                    const daysSince = Math.round((now - lastDate.getTime()) / (1000 * 60 * 60 * 24));
+                        .sort((a, b) => parseDateSafe(b.timestamp || b.date) - parseDateSafe(a.timestamp || a.date));
+
+                    
+
+                    const lastRec = carRecords[0];
+
+                    const lastDate = lastRec ? parseDateSafe(lastRec.timestamp || lastRec.date) : parseDateSafe(c?.lastVisit);
+
+                    const daysSince = Math.max(0, Math.floor((now - lastDate.getTime()) / (1000 * 60 * 60 * 24)));
+
+                    
+
+                    const isOilDue = daysSince >= 90 || (lastRec && lastRec.nextMileage && c?.lastMileage && Number(c.lastMileage) >= Number(lastRec.nextMileage));
+
+                    const insp = lastRec?.inspection || {};
+
+                    const hasSafetyIssue = insp.tires === '需更換' || insp.brakes === '需更換' || insp.belt === '需更換' || (insp.battery && parseFloat(insp.battery) < 12.2);
+
+
 
                     return {
 
-                        ...c,
+                        customer: c,
 
-                        lastVisitFormatted: formatDate(lastDate),
+                        lastRec,
+
+                        lastDate,
 
                         daysSince,
 
-                        lastMileage: lastRec ? lastRec.mileage : c.lastMileage
+                        isOilDue,
+
+                        hasSafetyIssue,
+
+                        inspection: insp
 
                     };
 
-                }).filter(c => {
+                });
 
-                    if (filterTab === 'oil') return c.daysSince >= 180;
+            }, [customers, records, now]);
 
-                    if (filterTab === 'major') return c.daysSince >= 365;
+
+
+            const filteredList = useMemo(() => {
+
+                return reminderList.filter(item => {
+
+                    const c = item.customer;
+
+                    if (!c) return false;
+
+
+
+                    if (filterTab === 'oil' && !item.isOilDue) return false;
+
+                    if (filterTab === 'safety' && !item.hasSafetyIssue) return false;
+
+
+
+                    if (searchTerm) {
+
+                        const q = String(searchTerm).trim().toUpperCase();
+
+                        const plate = String(c.plate || '').toUpperCase();
+
+                        const name = String(c.name || '').toUpperCase();
+
+                        const phone = String(c.phone || '');
+
+                        if (!plate.includes(q) && !name.includes(q) && !phone.includes(q)) {
+
+                            return false;
+
+                        }
+
+                    }
 
                     return true;
 
-                }).sort((a, b) => b.daysSince - a.daysSince);
+                });
 
-            }, [customers, records, filterTab]);
+            }, [reminderList, filterTab, searchTerm]);
 
 
 
-            const openEmailModal = (c) => {
+            const handleOpenEmailModal = (item) => {
 
-                const subject = `【${shopInfo.name || '車行'}】定期愛車保養與安全檢查貼心提醒 - ${c.plate}`;
+                const c = item.customer;
 
-                const defaultContent = `親愛的 ${c.name || '車主'} 您好：\n\n`
+                const plate = c?.plate || '';
 
-                    + `感謝您一直以來對【${shopInfo.name || '車行'}】的信任與支持！\n\n`
+                const name = c?.name || '車主';
 
-                    + `系統貼心提醒您，您的愛車（車牌號碼：${c.plate}${c.bikeModel ? `，車種：${c.bikeModel}` : ''}）：\n`
+                const bike = c?.bikeModel || '愛車';
 
-                    + `上次進廠維護日期為 ${c.lastVisitFormatted}（距今已過 ${c.daysSince} 天${c.lastMileage ? `，當時里程約 ${c.lastMileage} km` : ''}）。\n\n`
+                const days = item.daysSince;
 
-                    + `為了確保您的行車安全並維持車輛最佳運轉性能，建議您近期撥空回廠進行定檢與保養項目：\n`
+                const defaultSubject = `【${shopInfo?.name || 'Source Moto'}】定期機車保養貼心提醒 - ${plate}`;
 
-                    + `  • 機油、齒輪油潤滑度檢測與更換\n`
 
-                    + `  • 輪胎胎紋深度與胎壓安全檢查\n`
 
-                    + `  • 煞車皮來令片磨耗厚度檢視\n`
+                let defaultContent = `親愛的 ${name} 您好：\n\n`;
 
-                    + `  • 電瓶電壓蓄電健康度測試\n\n`
+                defaultContent += `感謝您一直以來對【${shopInfo?.name || 'Source Moto Custom'}】的支持與信賴！\n`;
 
-                    + `若有任何車況疑問或欲預約保養時間，歡迎隨時來電洽詢！\n\n`
+                defaultContent += `系統貼心提醒您，您的愛車【${bike} (${plate})】距離上次回廠保養已約 ${days} 天。\n\n`;
 
-                    + `門市名稱：${shopInfo.name || '車行'}\n`
 
-                    + `預約電話：${shopInfo.phone || '未提供'}\n`
 
-                    + `門市地址：${shopInfo.address || '未提供'}\n\n`
+                if (item.isOilDue) {
 
-                    + `祝您 騎乘順暢、行車平安！`;
+                    defaultContent += `• 機油與耗材定期保養：已達建議保養週期，定時更換機油能有效延長引擎壽命並維持最佳動力。\n`;
+
+                }
+
+                if (item.hasSafetyIssue) {
+
+                    defaultContent += `• 車況健檢項目提醒：上次進廠檢查時，輪胎胎紋、煞車皮或電瓶電壓有需留意之狀況，建議回店由專業技師複檢。\n`;
+
+                }
+
+
+
+                defaultContent += `\n為確保您的行車安全與騎乘順暢，歡迎您抽空預約回店檢查與保養！\n\n`;
+
+                if (shopInfo?.phone) defaultContent += `門市電話：${shopInfo.phone}\n`;
+
+                if (shopInfo?.address) defaultContent += `門市地址：${shopInfo.address}\n`;
+
+                defaultContent += `祝您 行車平安、騎乘順心！`;
 
 
 
@@ -5213,9 +5287,9 @@ ${JSON.stringify(catalogSummary)}
 
                     customer: c,
 
-                    email: c.email || '',
+                    email: c?.email || '',
 
-                    subject,
+                    subject: defaultSubject,
 
                     content: defaultContent
 
@@ -5227,19 +5301,23 @@ ${JSON.stringify(catalogSummary)}
 
             const handleSendEmail = async () => {
 
-                const { customer, email, subject, content } = emailModal;
+                const targetEmail = (emailModal.email || '').trim();
 
-                if (!email || !email.trim() || !email.includes('@')) {
+                if (!targetEmail || !targetEmail.includes('@')) {
 
-                    showAlert('請輸入有效的電子信箱（Email 地址）！');
+                    return showAlert('請輸入有效的電子郵件地址 (Email)！');
 
-                    return;
+                }
+
+                if (!gasUrl) {
+
+                    return showAlert('尚未設定 Google Apps Script 伺服器網址，無法發送 Email！');
 
                 }
 
 
 
-                setSendingId(customer.id || customer.plate);
+                setSendingId(emailModal.customer?.id || 'sending');
 
                 try {
 
@@ -5247,51 +5325,43 @@ ${JSON.stringify(catalogSummary)}
 
                         action: 'send_maintenance_reminder',
 
-                        email: email.trim(),
+                        email: targetEmail,
 
-                        subject: subject.trim(),
+                        subject: emailModal.subject,
 
-                        customText: content,
+                        customText: emailModal.content,
 
-                        shopInfo
+                        shopInfo: shopInfo
 
-                    }, 25000);
+                    }, 20000);
 
 
 
-                    if (res.ok && res.data && res.data.status === 'success') {
+                    if (res.ok && res.data && (res.data.status === 'success' || res.data.ok)) {
 
-                        // 若客戶原本未填寫 Email 或 Email 有變更，更新客戶資料庫
+                        if (emailModal.customer && emailModal.customer.email !== targetEmail) {
 
-                        if (setCustomers && customer.email !== email.trim()) {
+                            const updated = customers.map(c => c.id === emailModal.customer.id ? { ...c, email: targetEmail } : c);
 
-                            setCustomers(prev => prev.map(item => {
+                            setCustomers(updated);
 
-                                if ((item.id && item.id === customer.id) || item.plate === customer.plate) {
-
-                                    return { ...item, email: email.trim() };
-
-                                }
-
-                                return item;
-
-                            }));
+                            saveToLocalSafe('moto_customers', updated);
 
                         }
 
-                        showAlert(`保養提醒 Email 已成功寄送給車主（${email.trim()}）！`);
+                        showAlert(`✅ 保養提醒 Email 已成功寄送至：${targetEmail}！`);
 
                         setEmailModal({ isOpen: false, customer: null, email: '', subject: '', content: '' });
 
                     } else {
 
-                        showAlert(`發送失敗：${res.error || (res.data && res.data.message) || '伺服器未正確回應'}`);
+                        showAlert(`❌ 寄送失敗：${res.error || res.data?.message || '雲端伺服器回應異常'}`);
 
                     }
 
                 } catch (err) {
 
-                    showAlert(`發送發生錯誤：${err.message || '請確認網路與 Google Apps Script 連線'}`);
+                    showAlert(`❌ 寄送發生錯誤：${err.message}`);
 
                 } finally {
 
@@ -5305,7 +5375,7 @@ ${JSON.stringify(catalogSummary)}
 
             return (
 
-                <div className="max-w-5xl mx-auto space-y-4 pb-24 text-xs">
+                <div className="max-w-6xl mx-auto space-y-4 pb-24 text-xs">
 
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
 
@@ -5313,21 +5383,75 @@ ${JSON.stringify(catalogSummary)}
 
                             <h2 className="text-lg font-black text-slate-800 flex items-center gap-2">
 
-                                <Mail className="text-blue-600" size={22}/> 定期保養回廠 Email 貼心提醒
+                                <Bell className="text-blue-600" size={22}/> 車主保養提醒與 Email 智慧推播
 
                             </h2>
 
-                            <p className="text-slate-400 text-xs mt-0.5">自動追蹤已過保養週期之車輛，一鍵寄送預約與安全定檢 Email</p>
+                            <p className="text-slate-400 text-xs mt-0.5">根據進廠週期、行駛里程與四大健檢安全項目，一鍵發送客製化 Email 保養通知</p>
 
                         </div>
 
-                        <div className="flex bg-slate-100 p-1 rounded-xl">
+                        <div className="flex flex-col sm:flex-row items-center gap-2 w-full sm:w-auto">
 
-                            <button onClick={() => setFilterTab('oil')} className={`px-3 py-1.5 rounded-lg font-bold transition-all ${filterTab === 'oil' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600'}`}>機油保養 (半年)</button>
+                            <div className="flex bg-slate-100 p-1 rounded-xl w-full sm:w-auto">
 
-                            <button onClick={() => setFilterTab('major')} className={`px-3 py-1.5 rounded-lg font-bold transition-all ${filterTab === 'major' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600'}`}>年度大保養 (1年)</button>
+                                <button 
 
-                            <button onClick={() => setFilterTab('all')} className={`px-3 py-1.5 rounded-lg font-bold transition-all ${filterTab === 'all' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600'}`}>全部客戶</button>
+                                    onClick={() => setFilterTab('all')} 
+
+                                    className={`flex-1 sm:flex-none px-3 py-1.5 rounded-lg font-bold transition-all ${filterTab === 'all' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+
+                                >
+
+                                    全部 ({reminderList.length})
+
+                                </button>
+
+                                <button 
+
+                                    onClick={() => setFilterTab('oil')} 
+
+                                    className={`flex-1 sm:flex-none px-3 py-1.5 rounded-lg font-bold transition-all ${filterTab === 'oil' ? 'bg-amber-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+
+                                >
+
+                                    定檢/機油到期 ({reminderList.filter(i => i.isOilDue).length})
+
+                                </button>
+
+                                <button 
+
+                                    onClick={() => setFilterTab('safety')} 
+
+                                    className={`flex-1 sm:flex-none px-3 py-1.5 rounded-lg font-bold transition-all ${filterTab === 'safety' ? 'bg-red-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+
+                                >
+
+                                    健檢異常 ({reminderList.filter(i => i.hasSafetyIssue).length})
+
+                                </button>
+
+                            </div>
+
+                            <div className="relative w-full sm:w-56">
+
+                                <Search className="absolute left-3 top-2.5 text-slate-400" size={15}/>
+
+                                <input 
+
+                                    type="text" 
+
+                                    placeholder="搜尋車牌、姓名或電話..." 
+
+                                    value={searchTerm} 
+
+                                    onChange={e => setSearchTerm(e.target.value)} 
+
+                                    className="w-full pl-9 pr-3 py-1.5 border border-slate-300 rounded-xl outline-none focus:border-blue-500 bg-slate-50 text-xs"
+
+                                />
+
+                            </div>
 
                         </div>
 
@@ -5337,157 +5461,205 @@ ${JSON.stringify(catalogSummary)}
 
                     <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
 
-                        <table className="w-full text-left text-xs min-w-[700px]">
+                        <div className="overflow-x-auto">
 
-                            <thead>
+                            <table className="w-full text-left text-xs min-w-[760px]">
 
-                                <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
+                                <thead>
 
-                                    <th className="p-3.5">車牌號碼</th>
+                                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
 
-                                    <th className="p-3.5">車主姓名</th>
+                                        <th className="p-3.5">車輛與車主</th>
 
-                                    <th className="p-3.5">電子郵件 / 電話</th>
+                                        <th className="p-3.5">上次進廠與歷程</th>
 
-                                    <th className="p-3.5">上次到店日期</th>
+                                        <th className="p-3.5">車況健檢與保養診斷狀態</th>
 
-                                    <th className="p-3.5 text-center">已過天數</th>
+                                        <th className="p-3.5 text-center w-40">Email 推播提醒</th>
 
-                                    <th className="p-3.5 text-center w-36">Email 推播操作</th>
+                                    </tr>
 
-                                </tr>
+                                </thead>
 
-                            </thead>
+                                <tbody className="divide-y divide-slate-100">
 
-                            <tbody className="divide-y divide-slate-100">
+                                    {filteredList.map(item => {
 
-                                {reminderList.map(c => {
+                                        const c = item.customer;
 
-                                    const hasEmail = Boolean(c.email && c.email.trim());
+                                        const hasEmail = Boolean(c.email && c.email.includes('@'));
 
-                                    const isSendingThis = sendingId === (c.id || c.plate);
+                                        const isSending = sendingId === c.id;
 
 
 
-                                    return (
+                                        return (
 
-                                        <tr key={c.id || c.plate} className="hover:bg-slate-50/80 transition-colors">
+                                            <tr key={c.id || c.plate} className="hover:bg-slate-50/80 transition-colors">
 
-                                            <td className="p-3.5 font-mono font-black text-blue-700 text-sm">{c.plate}</td>
+                                                <td className="p-3.5">
 
-                                            <td className="p-3.5 font-bold text-slate-800">{c.name || '車主'}</td>
+                                                    <div className="font-mono font-black text-blue-700 text-sm">{c.plate}</div>
 
-                                            <td className="p-3.5">
+                                                    <div className="text-slate-800 font-bold">{c.name || '車主'} {c.phone ? `(${c.phone})` : ''}</div>
 
-                                                {hasEmail ? (
+                                                    <div className="text-[11px] text-slate-400">{c.bikeModel || '-'} {c.year ? `(${c.year}年)` : ''}</div>
 
-                                                    <div className="font-mono text-slate-700 font-bold flex items-center gap-1">
+                                                </td>
 
-                                                        <Mail size={12} className="text-blue-500" /> {c.email}
+                                                <td className="p-3.5">
+
+                                                    <div className="font-medium text-slate-700">{formatDate(item.lastDate)}</div>
+
+                                                    <div className="text-[11px] text-slate-500">距今約 <strong className="text-slate-800 font-mono">{item.daysSince}</strong> 天</div>
+
+                                                    <div className="text-[10px] text-slate-400 font-mono">上次里程: {c.lastMileage ? `${c.lastMileage} km` : '-'}</div>
+
+                                                </td>
+
+                                                <td className="p-3.5 space-y-1">
+
+                                                    <div className="flex flex-wrap gap-1">
+
+                                                        {item.isOilDue && (
+
+                                                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+
+                                                                🛢️ 機油/定期里程建議更換
+
+                                                            </span>
+
+                                                        )}
+
+                                                        {item.hasSafetyIssue && (
+
+                                                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-900 border border-red-300">
+
+                                                                ⚠️ 健檢項目異常需複檢
+
+                                                            </span>
+
+                                                        )}
+
+                                                        {!item.isOilDue && !item.hasSafetyIssue && (
+
+                                                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+
+                                                                ✓ 目前車況正常
+
+                                                            </span>
+
+                                                        )}
 
                                                     </div>
 
-                                                ) : (
+                                                    <div className="text-[10px] text-slate-400">
 
-                                                    <span className="text-amber-600 text-[11px] font-bold bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                                                        輪胎:{item.inspection.tires || '良好'} | 煞車:{item.inspection.brakes || '良好'} | 皮帶:{item.inspection.belt || '良好'} | 電瓶:{item.inspection.battery || '12.8V'}
 
-                                                        尚未登記 Email
+                                                    </div>
 
-                                                    </span>
+                                                </td>
 
-                                                )}
+                                                <td className="p-3.5 text-center">
 
-                                                {c.phone && <div className="font-mono text-slate-400 text-[11px] mt-0.5">{c.phone}</div>}
+                                                    <button 
 
-                                            </td>
+                                                        type="button" 
 
-                                            <td className="p-3.5 text-slate-600">{c.lastVisitFormatted}</td>
+                                                        onClick={() => handleOpenEmailModal(item)}
 
-                                            <td className="p-3.5 text-center">
+                                                        disabled={isSending}
 
-                                                <span className={`px-2 py-0.5 rounded-full font-bold ${c.daysSince > 180 ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'}`}>
+                                                        className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 mx-auto transition-all shadow-2xs active:scale-95 disabled:opacity-50 ${
 
-                                                    {c.daysSince} 天
+                                                            hasEmail 
 
-                                                </span>
+                                                                ? 'bg-blue-600 hover:bg-blue-700 text-white' 
 
-                                            </td>
+                                                                : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
 
-                                            <td className="p-3.5 text-center">
+                                                        }`}
 
-                                                <button 
+                                                        title={hasEmail ? `寄送提醒至 ${c.email}` : '尚未留存 Email，點擊可補填並發送'}
 
-                                                    onClick={() => openEmailModal(c)} 
+                                                    >
 
-                                                    disabled={isSendingThis}
+                                                        {isSending ? <RefreshCw size={13} className="animate-spin" /> : <Mail size={13} />}
 
-                                                    className={`px-3 py-1.5 rounded-lg font-bold flex items-center justify-center gap-1 mx-auto shadow-xs transition-colors ${
+                                                        <span>{hasEmail ? '發送 Email' : '補填信箱發送'}</span>
 
-                                                        hasEmail 
+                                                    </button>
 
-                                                            ? 'bg-blue-600 hover:bg-blue-700 text-white' 
+                                                    {c.email ? (
 
-                                                            : 'bg-amber-500 hover:bg-amber-600 text-white'
+                                                        <div className="text-[10px] text-slate-400 truncate max-w-[130px] mx-auto mt-1 font-mono" title={c.email}>
 
-                                                    } disabled:opacity-50`}
+                                                            {c.email}
 
-                                                    title={hasEmail ? '點擊編輯並發送 Email' : '車主無 Email，點擊補填後發送'}
+                                                        </div>
 
-                                                >
+                                                    ) : (
 
-                                                    {isSendingThis ? <RefreshCw size={13}/> : <Mail size={13}/>}
+                                                        <div className="text-[10px] text-amber-600 font-bold mt-1">未留 Email</div>
 
-                                                    <span>{hasEmail ? '發送 Email' : '補填 Email 寄送'}</span>
+                                                    )}
 
-                                                </button>
+                                                </td>
+
+                                            </tr>
+
+                                        );
+
+                                    })}
+
+                                    {filteredList.length === 0 && (
+
+                                        <tr>
+
+                                            <td colSpan="4" className="p-12 text-center text-slate-400 font-bold">
+
+                                                查無符合篩選條件的車主保養提醒紀錄
 
                                             </td>
 
                                         </tr>
 
-                                    );
+                                    )}
 
-                                })}
+                                </tbody>
 
-                                {reminderList.length === 0 && (
+                            </table>
 
-                                    <tr>
-
-                                        <td colSpan="6" className="p-12 text-center text-slate-400 font-bold">目前無符合條件的待提醒車輛</td>
-
-                                    </tr>
-
-                                )}
-
-                            </tbody>
-
-                        </table>
+                        </div>
 
                     </div>
 
 
 
-                    {/* Email 預覽與自訂寄送彈窗 */}
+                    {/* Email 預覽與自訂發送彈窗 */}
 
                     {emailModal.isOpen && (
 
-                        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+                        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
 
                             <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden animate-in zoom-in-95">
 
                                 <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
 
-                                    <div className="flex items-center gap-2 font-bold text-sm">
+                                    <div className="flex items-center gap-2">
 
                                         <Mail size={18} className="text-blue-400"/>
 
-                                        <span>發送保養提醒 Email（{emailModal.customer?.plate}）</span>
+                                        <h3 className="font-bold text-sm">寄送車主保養提醒信件</h3>
 
                                     </div>
 
                                     <button 
 
-                                        onClick={() => setEmailModal({ ...emailModal, isOpen: false })} 
+                                        type="button" 
+
+                                        onClick={() => setEmailModal({ isOpen: false, customer: null, email: '', subject: '', content: '' })} 
 
                                         className="p-1 hover:bg-slate-800 rounded-lg text-slate-300"
 
@@ -5499,39 +5671,31 @@ ${JSON.stringify(catalogSummary)}
 
                                 </div>
 
-                                <div className="p-5 overflow-y-auto flex-1 space-y-3.5 text-xs">
+
+
+                                <div className="p-4 overflow-y-auto flex-1 space-y-3">
 
                                     <div>
 
-                                        <label className="text-xs font-bold text-slate-700 block mb-1">
-
-                                            收件者信箱 (Email) *
-
-                                        </label>
+                                        <label className="text-[11px] font-bold text-slate-600 block mb-1">車主收件電子信箱 (Email) *</label>
 
                                         <input 
 
                                             type="email" 
 
-                                            value={emailModal.email}
+                                            value={emailModal.email} 
 
-                                            onChange={e => setEmailModal({ ...emailModal, email: e.target.value })}
+                                            onChange={e => setEmailModal({ ...emailModal, email: e.target.value })} 
 
-                                            placeholder="例如：customer@example.com"
+                                            placeholder="例: customer@example.com" 
 
-                                            className="w-full p-2.5 border border-slate-300 rounded-xl font-bold bg-slate-50 outline-none focus:border-blue-500 font-mono"
+                                            className="w-full p-2 border border-slate-300 rounded-xl font-mono text-xs outline-none focus:border-blue-500 bg-yellow-50/60 font-bold" 
+
+                                            required 
 
                                         />
 
-                                        {!emailModal.customer?.email && (
-
-                                            <span className="text-[11px] text-amber-600 font-bold mt-1 block">
-
-                                                💡 寄出後將自動將此 Email 保存至該客戶車籍檔案中，下次無需重複輸入。
-
-                                            </span>
-
-                                        )}
+                                        <span className="text-[10px] text-slate-400 mt-0.5 block">若此客戶無信箱或修改信箱，寄出後將自動更新保存於車籍資料庫中</span>
 
                                     </div>
 
@@ -5539,17 +5703,17 @@ ${JSON.stringify(catalogSummary)}
 
                                     <div>
 
-                                        <label className="text-xs font-bold text-slate-700 block mb-1">信件主旨</label>
+                                        <label className="text-[11px] font-bold text-slate-600 block mb-1">信件主旨</label>
 
                                         <input 
 
                                             type="text" 
 
-                                            value={emailModal.subject}
+                                            value={emailModal.subject} 
 
-                                            onChange={e => setEmailModal({ ...emailModal, subject: e.target.value })}
+                                            onChange={e => setEmailModal({ ...emailModal, subject: e.target.value })} 
 
-                                            className="w-full p-2.5 border border-slate-300 rounded-xl font-bold bg-slate-50 outline-none focus:border-blue-500"
+                                            className="w-full p-2 border border-slate-300 rounded-xl text-xs font-bold outline-none focus:border-blue-500" 
 
                                         />
 
@@ -5559,17 +5723,17 @@ ${JSON.stringify(catalogSummary)}
 
                                     <div>
 
-                                        <label className="text-xs font-bold text-slate-700 block mb-1">信件內容預覽與自訂編輯</label>
+                                        <label className="text-[11px] font-bold text-slate-600 block mb-1">信件預覽內容 (可自由編輯微調)</label>
 
                                         <textarea 
 
-                                            rows="10"
+                                            rows="9" 
 
-                                            value={emailModal.content}
+                                            value={emailModal.content} 
 
-                                            onChange={e => setEmailModal({ ...emailModal, content: e.target.value })}
+                                            onChange={e => setEmailModal({ ...emailModal, content: e.target.value })} 
 
-                                            className="w-full p-3 border border-slate-300 rounded-xl leading-relaxed outline-none focus:border-blue-500 bg-slate-50 font-mono text-[11px]"
+                                            className="w-full p-2.5 border border-slate-300 rounded-xl text-xs leading-relaxed outline-none focus:border-blue-500 font-mono" 
 
                                         ></textarea>
 
@@ -5577,15 +5741,17 @@ ${JSON.stringify(catalogSummary)}
 
                                 </div>
 
-                                <div className="p-3.5 border-t border-slate-100 bg-slate-50 flex justify-end gap-2">
+
+
+                                <div className="p-3.5 bg-slate-50 border-t border-slate-200 flex justify-end gap-2">
 
                                     <button 
 
                                         type="button" 
 
-                                        onClick={() => setEmailModal({ ...emailModal, isOpen: false })}
+                                        onClick={() => setEmailModal({ isOpen: false, customer: null, email: '', subject: '', content: '' })} 
 
-                                        className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-xl font-bold transition-colors"
+                                        className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-xl font-bold"
 
                                     >
 
@@ -5597,17 +5763,17 @@ ${JSON.stringify(catalogSummary)}
 
                                         type="button" 
 
-                                        onClick={handleSendEmail}
+                                        onClick={handleSendEmail} 
 
-                                        disabled={sendingId !== null}
+                                        disabled={Boolean(sendingId)}
 
-                                        className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold flex items-center gap-1.5 shadow-xs transition-colors disabled:opacity-50"
+                                        className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold flex items-center gap-1.5 shadow-xs transition-all active:scale-95 disabled:opacity-50"
 
                                     >
 
-                                        {sendingId !== null ? <RefreshCw size={14}/> : <Check size={14}/>}
+                                        {sendingId ? <RefreshCw size={14} className="animate-spin" /> : <Mail size={14} />}
 
-                                        <span>{sendingId !== null ? '正在寄送中...' : '確認寄出 Email'}</span>
+                                        <span>{sendingId ? '傳送中...' : '確認寄出提醒信件'}</span>
 
                                     </button>
 
@@ -5627,11 +5793,33 @@ ${JSON.stringify(catalogSummary)}
 
 
 
-        const CustomersView = ({ customers, records }) => {
+        const CustomersView = ({ customers, setCustomers, records, setRecords, saveSettingsToCloud, showAlert, showConfirm }) => {
 
             const [searchTerm, setSearchTerm] = useState('');
 
             const [selectedCustomer, setSelectedCustomer] = useState(null);
+
+            const [editingCustomer, setEditingCustomer] = useState(null);
+
+            const [editForm, setEditForm] = useState({
+
+                id: '',
+
+                plate: '',
+
+                name: '',
+
+                phone: '',
+
+                email: '',
+
+                year: '',
+
+                bikeModel: '',
+
+                lastMileage: ''
+
+            });
 
 
 
@@ -5653,6 +5841,117 @@ ${JSON.stringify(catalogSummary)}
 
             });
 
+            const handleOpenEdit = (c) => {
+                setEditingCustomer(c);
+                setEditForm({
+                    id: c.id ? String(c.id) : String(Date.now()),
+                    plate: String(c.plate || ''),
+                    name: String(c.name || ''),
+                    phone: String(c.phone !== undefined && c.phone !== null ? c.phone : ''),
+                    email: String(c.email || ''),
+                    year: String(c.year !== undefined && c.year !== null ? c.year : ''),
+                    bikeModel: String(c.bikeModel || ''),
+                    lastMileage: c.lastMileage !== undefined && c.lastMileage !== null ? String(c.lastMileage) : ''
+                });
+            };
+
+            const handleSaveCustomer = () => {
+                const targetPlate = String(editForm.plate || '').trim().toUpperCase();
+                if (!targetPlate) {
+                    return showAlert('車牌號碼不可為空！');
+                }
+
+                const originalPlate = String(editingCustomer.plate || '').toUpperCase();
+
+                // 檢查是否與其他客戶車牌衝突
+                const isDuplicate = customers.some(c => 
+                    c.id !== editingCustomer.id && 
+                    String(c.plate || '').toUpperCase() === targetPlate
+                );
+
+                if (isDuplicate) {
+                    return showAlert(`車牌號碼「${targetPlate}」已被其他車主登記，請確認是否輸入錯誤！`);
+                }
+
+                const safeName = String(editForm.name || '').trim();
+                const safePhone = String(editForm.phone || '').trim();
+                const safeEmail = String(editForm.email || '').trim();
+                const safeYear = String(editForm.year || '').trim();
+                const safeBikeModel = String(editForm.bikeModel || '').trim();
+                const safeLastMileage = editForm.lastMileage !== '' && editForm.lastMileage !== null && editForm.lastMileage !== undefined 
+                    ? Number(editForm.lastMileage) 
+                    : editingCustomer.lastMileage;
+
+                const updatedCustomerObj = {
+                    ...editingCustomer,
+                    plate: targetPlate,
+                    name: safeName,
+                    phone: safePhone,
+                    email: safeEmail,
+                    year: safeYear,
+                    bikeModel: safeBikeModel,
+                    lastMileage: safeLastMileage
+                };
+
+                const updatedCustomers = customers.map(c => 
+                    c.id === editingCustomer.id ? updatedCustomerObj : c
+                );
+                setCustomers(updatedCustomers);
+                saveToLocalSafe('moto_customers', updatedCustomers);
+
+                // 若車牌有異動，連動更新所有歷史工單的車牌號碼，避免歷史履歷孤立
+                let updatedRecords = records;
+                if (originalPlate && originalPlate !== targetPlate && setRecords) {
+                    updatedRecords = records.map(r => {
+                        if (String(r.plate || '').toUpperCase() === originalPlate) {
+                            return {
+                                ...r,
+                                plate: targetPlate,
+                                name: safeName || r.name,
+                                phone: safePhone || r.phone,
+                                email: safeEmail || r.email,
+                                bikeModel: safeBikeModel || r.bikeModel
+                            };
+                        }
+                        return r;
+                    });
+                    setRecords(updatedRecords);
+                    saveToLocalSafe('moto_records', updatedRecords);
+                }
+
+                // 同步雲端試算表
+                if (saveSettingsToCloud) {
+                    saveSettingsToCloud(null, true);
+                }
+
+                setEditingCustomer(null);
+                showAlert(`✅ 客戶【${targetPlate}】車籍資料已成功更新${originalPlate !== targetPlate ? '，並已連動更新歷史工單紀錄！' : '！'}`);
+            };
+
+            const handleDeleteCustomer = () => {
+
+                showConfirm(`確定要從資料庫中刪除【${editingCustomer.plate} - ${editingCustomer.name || '車主'}】的車籍檔案嗎？`, () => {
+
+                    const updated = customers.filter(c => c.id !== editingCustomer.id);
+
+                    setCustomers(updated);
+
+                    saveToLocalSafe('moto_customers', updated);
+
+                    if (saveSettingsToCloud) {
+
+                        saveSettingsToCloud(null, true);
+
+                    }
+
+                    setEditingCustomer(null);
+
+                    showAlert(`已刪除客戶【${editingCustomer.plate}】檔案。`);
+
+                });
+
+            };
+
 
 
             return (
@@ -5669,7 +5968,7 @@ ${JSON.stringify(catalogSummary)}
 
                             </h2>
 
-                            <p className="text-slate-400 text-xs mt-0.5">全店累計 {customers.length} 位客戶與機車維修履歷檔案</p>
+                            <p className="text-slate-400 text-xs mt-0.5">全店累計 {customers.length} 位客戶與機車維修履歷檔案，支援即時編輯修正</p>
 
                         </div>
 
@@ -5717,7 +6016,7 @@ ${JSON.stringify(catalogSummary)}
 
                                     <th className="p-3.5">最近來店</th>
 
-                                    <th className="p-3.5 text-center">維修履歷</th>
+                                    <th className="p-3.5 text-center w-36">操作管理</th>
 
                                 </tr>
 
@@ -5743,17 +6042,37 @@ ${JSON.stringify(catalogSummary)}
 
                                         <td className="p-3.5 text-center">
 
-                                            <button 
+                                            <div className="flex items-center justify-center gap-1.5">
 
-                                                onClick={() => setSelectedCustomer(c)} 
+                                                <button 
 
-                                                className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg font-bold flex items-center justify-center gap-1 mx-auto"
+                                                    onClick={() => handleOpenEdit(c)} 
 
-                                            >
+                                                    className="px-2.5 py-1.5 bg-white border border-slate-300 hover:border-blue-400 hover:bg-blue-50 text-slate-700 hover:text-blue-700 rounded-lg font-bold flex items-center gap-1 shadow-2xs transition-all"
 
-                                                <History size={14}/> 查閱歷程
+                                                    title="修改車主或車籍資料"
 
-                                            </button>
+                                                >
+
+                                                    <Edit3 size={13}/> 編輯
+
+                                                </button>
+
+                                                <button 
+
+                                                    onClick={() => setSelectedCustomer(c)} 
+
+                                                    className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg font-bold flex items-center gap-1 transition-colors"
+
+                                                    title="查閱維修歷史紀錄"
+
+                                                >
+
+                                                    <History size={13}/> 歷程
+
+                                                </button>
+
+                                            </div>
 
                                         </td>
 
@@ -5766,6 +6085,264 @@ ${JSON.stringify(catalogSummary)}
                         </table>
 
                     </div>
+
+
+
+                    {/* 客戶車籍資料修改彈窗 */}
+
+                    {editingCustomer && (
+
+                        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+
+                            <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden animate-in zoom-in-95">
+
+                                <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
+
+                                    <div className="font-bold flex items-center gap-2">
+
+                                        <UserCheck size={20} className="text-blue-400"/>
+
+                                        <span>編輯客戶車籍檔案：{editingCustomer.plate}</span>
+
+                                    </div>
+
+                                    <button onClick={() => setEditingCustomer(null)} className="p-1 hover:bg-slate-800 rounded-lg text-slate-300"><X size={18}/></button>
+
+                                </div>
+
+
+
+                                <div className="p-5 overflow-y-auto flex-1 space-y-3.5">
+
+                                    <div className="bg-blue-50/70 border border-blue-100 p-2.5 rounded-xl text-[11px] text-blue-800">
+
+                                        💡 提示：若修改車牌號碼，系統將自動連動更新過往關聯的所有歷史工單，確保維修履歷完整。
+
+                                    </div>
+
+
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+                                        <div className="space-y-1">
+
+                                            <label className="text-[11px] font-bold text-slate-600">車牌號碼 *</label>
+
+                                            <input 
+
+                                                type="text" 
+
+                                                value={editForm.plate} 
+
+                                                onChange={e => setEditForm({ ...editForm, plate: e.target.value.toUpperCase() })} 
+
+                                                placeholder="例: ABC-1234" 
+
+                                                className="w-full p-2.5 border border-slate-300 rounded-xl uppercase font-black text-sm bg-yellow-50 outline-none focus:border-blue-500" 
+
+                                                required 
+
+                                            />
+
+                                        </div>
+
+
+
+                                        <div className="space-y-1">
+
+                                            <label className="text-[11px] font-bold text-slate-600">車主姓名</label>
+
+                                            <input 
+
+                                                type="text" 
+
+                                                value={editForm.name} 
+
+                                                onChange={e => setEditForm({ ...editForm, name: e.target.value })} 
+
+                                                placeholder="例: 王小明" 
+
+                                                className="w-full p-2.5 border border-slate-300 rounded-xl text-xs font-bold outline-none focus:border-blue-500 bg-white" 
+
+                                            />
+
+                                        </div>
+
+
+
+                                        <div className="space-y-1">
+
+                                            <label className="text-[11px] font-bold text-slate-600">聯絡電話</label>
+
+                                            <input 
+
+                                                type="tel" 
+
+                                                value={editForm.phone} 
+
+                                                onChange={e => setEditForm({ ...editForm, phone: e.target.value })} 
+
+                                                placeholder="例: 0912-345-678" 
+
+                                                className="w-full p-2.5 border border-slate-300 rounded-xl text-xs font-mono font-bold outline-none focus:border-blue-500 bg-white" 
+
+                                            />
+
+                                        </div>
+
+
+
+                                        <div className="space-y-1">
+
+                                            <label className="text-[11px] font-bold text-slate-600">電子信箱 (Email)</label>
+
+                                            <input 
+
+                                                type="email" 
+
+                                                value={editForm.email} 
+
+                                                onChange={e => setEditForm({ ...editForm, email: e.target.value })} 
+
+                                                placeholder="例: customer@example.com" 
+
+                                                className="w-full p-2.5 border border-slate-300 rounded-xl text-xs font-mono outline-none focus:border-blue-500 bg-white" 
+
+                                            />
+
+                                        </div>
+
+
+
+                                        <div className="space-y-1">
+
+                                            <label className="text-[11px] font-bold text-slate-600">車種型號</label>
+
+                                            <input 
+
+                                                type="text" 
+
+                                                value={editForm.bikeModel} 
+
+                                                onChange={e => setEditForm({ ...editForm, bikeModel: e.target.value })} 
+
+                                                placeholder="例: 勁戰六代 / SMAX" 
+
+                                                className="w-full p-2.5 border border-slate-300 rounded-xl text-xs font-bold outline-none focus:border-blue-500 bg-white" 
+
+                                            />
+
+                                        </div>
+
+
+
+                                        <div className="space-y-1">
+
+                                            <label className="text-[11px] font-bold text-slate-600">出廠年份</label>
+
+                                            <input 
+
+                                                type="text" 
+
+                                                value={editForm.year} 
+
+                                                onChange={e => setEditForm({ ...editForm, year: e.target.value })} 
+
+                                                placeholder="例: 2021" 
+
+                                                className="w-full p-2.5 border border-slate-300 rounded-xl text-xs font-mono outline-none focus:border-blue-500 bg-white" 
+
+                                            />
+
+                                        </div>
+
+
+
+                                        <div className="sm:col-span-2 space-y-1">
+
+                                            <label className="text-[11px] font-bold text-slate-600">最新行駛里程 (km)</label>
+
+                                            <input 
+
+                                                type="number" 
+
+                                                value={editForm.lastMileage} 
+
+                                                onChange={e => setEditForm({ ...editForm, lastMileage: e.target.value })} 
+
+                                                placeholder="例: 15420" 
+
+                                                className="w-full p-2.5 border border-slate-300 rounded-xl text-xs font-mono font-bold outline-none focus:border-blue-500 bg-white" 
+
+                                            />
+
+                                        </div>
+
+                                    </div>
+
+                                </div>
+
+
+
+                                <div className="p-3.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+
+                                    <button 
+
+                                        type="button" 
+
+                                        onClick={handleDeleteCustomer}
+
+                                        className="px-3 py-2 text-red-600 hover:bg-red-50 border border-red-200 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors"
+
+                                        title="刪除此客戶車籍"
+
+                                    >
+
+                                        <Trash2 size={14}/> 刪除車籍
+
+                                    </button>
+
+
+
+                                    <div className="flex gap-2">
+
+                                        <button 
+
+                                            type="button" 
+
+                                            onClick={() => setEditingCustomer(null)}
+
+                                            className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-xl font-bold transition-colors"
+
+                                        >
+
+                                            取消
+
+                                        </button>
+
+                                        <button 
+
+                                            type="button" 
+
+                                            onClick={handleSaveCustomer}
+
+                                            className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold flex items-center gap-1.5 shadow-xs transition-colors"
+
+                                        >
+
+                                            <Check size={14}/> 儲存更新
+
+                                        </button>
+
+                                    </div>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+                    )}
 
 
 
@@ -10000,7 +10577,17 @@ function handleSyncWorkforcePerformance(data) {
 
                                     customers={customers}
 
+                                    setCustomers={setCustomers}
+
                                     records={records}
+
+                                    setRecords={setRecords}
+
+                                    saveSettingsToCloud={saveSettingsToCloud}
+
+                                    showAlert={showAlert}
+
+                                    showConfirm={showConfirm}
 
                                 />
 
