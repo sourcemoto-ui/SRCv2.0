@@ -5861,13 +5861,22 @@ ${JSON.stringify(catalogSummary)}
                     return showAlert('車牌號碼不可為空！');
                 }
 
-                const originalPlate = String(editingCustomer.plate || '').toUpperCase();
+                const originalPlate = String(editingCustomer.plate || '').trim().toUpperCase();
+                const editingId = editingCustomer.id ? String(editingCustomer.id) : null;
 
-                // 檢查是否與其他客戶車牌衝突
-                const isDuplicate = customers.some(c => 
-                    c.id !== editingCustomer.id && 
-                    String(c.plate || '').toUpperCase() === targetPlate
-                );
+                // 健全的比對判定：ID 一致（轉字串比較）或原車牌號碼一致皆視為同一位客戶
+                const isCurrentCustomer = (c) => {
+                    if (!c) return false;
+                    if (editingId && c.id && String(c.id) === editingId) return true;
+                    if (originalPlate && String(c.plate || '').trim().toUpperCase() === originalPlate) return true;
+                    return false;
+                };
+
+                // 檢查是否與其他既有客戶車牌衝突
+                const isDuplicate = customers.some(c => {
+                    if (isCurrentCustomer(c)) return false;
+                    return String(c.plate || '').trim().toUpperCase() === targetPlate;
+                });
 
                 if (isDuplicate) {
                     return showAlert(`車牌號碼「${targetPlate}」已被其他車主登記，請確認是否輸入錯誤！`);
@@ -5884,6 +5893,7 @@ ${JSON.stringify(catalogSummary)}
 
                 const updatedCustomerObj = {
                     ...editingCustomer,
+                    id: editingCustomer.id || editForm.id || String(Date.now()),
                     plate: targetPlate,
                     name: safeName,
                     phone: safePhone,
@@ -5893,17 +5903,26 @@ ${JSON.stringify(catalogSummary)}
                     lastMileage: safeLastMileage
                 };
 
-                const updatedCustomers = customers.map(c => 
-                    c.id === editingCustomer.id ? updatedCustomerObj : c
-                );
-                setCustomers(updatedCustomers);
-                saveToLocalSafe('moto_customers', updatedCustomers);
+                let matchFound = false;
+                const updatedCustomers = customers.map(c => {
+                    if (isCurrentCustomer(c)) {
+                        matchFound = true;
+                        return updatedCustomerObj;
+                    }
+                    return c;
+                });
+
+                // 防呆：若因故未匹配到陣列元素，則追加此筆資料
+                const finalCustomers = matchFound ? updatedCustomers : [...customers, updatedCustomerObj];
+
+                setCustomers(finalCustomers);
+                saveToLocalSafe('moto_customers', finalCustomers);
 
                 // 若車牌有異動，連動更新所有歷史工單的車牌號碼，避免歷史履歷孤立
                 let updatedRecords = records;
                 if (originalPlate && originalPlate !== targetPlate && setRecords) {
                     updatedRecords = records.map(r => {
-                        if (String(r.plate || '').toUpperCase() === originalPlate) {
+                        if (String(r.plate || '').trim().toUpperCase() === originalPlate) {
                             return {
                                 ...r,
                                 plate: targetPlate,
@@ -5919,9 +5938,9 @@ ${JSON.stringify(catalogSummary)}
                     saveToLocalSafe('moto_records', updatedRecords);
                 }
 
-                // 同步雲端試算表
+                // 同步雲端試算表：顯式傳入 finalCustomers 與 updatedRecords，徹底杜絕閉包舊狀態覆蓋問題
                 if (saveSettingsToCloud) {
-                    saveSettingsToCloud(null, true);
+                    saveSettingsToCloud(null, true, null, null, null, null, finalCustomers, updatedRecords);
                 }
 
                 setEditingCustomer(null);
@@ -5929,27 +5948,25 @@ ${JSON.stringify(catalogSummary)}
             };
 
             const handleDeleteCustomer = () => {
+                const originalPlate = String(editingCustomer.plate || '').trim().toUpperCase();
+                const editingId = editingCustomer.id ? String(editingCustomer.id) : null;
+                const isCurrentCustomer = (c) => {
+                    if (!c) return false;
+                    if (editingId && c.id && String(c.id) === editingId) return true;
+                    if (originalPlate && String(c.plate || '').trim().toUpperCase() === originalPlate) return true;
+                    return false;
+                };
 
                 showConfirm(`確定要從資料庫中刪除【${editingCustomer.plate} - ${editingCustomer.name || '車主'}】的車籍檔案嗎？`, () => {
-
-                    const updated = customers.filter(c => c.id !== editingCustomer.id);
-
+                    const updated = customers.filter(c => !isCurrentCustomer(c));
                     setCustomers(updated);
-
                     saveToLocalSafe('moto_customers', updated);
-
                     if (saveSettingsToCloud) {
-
-                        saveSettingsToCloud(null, true);
-
+                        saveSettingsToCloud(null, true, null, null, null, null, updated);
                     }
-
                     setEditingCustomer(null);
-
                     showAlert(`已刪除客戶【${editingCustomer.plate}】檔案。`);
-
                 });
-
             };
 
 
@@ -9905,14 +9922,24 @@ function handleSyncWorkforcePerformance(data) {
                             });
                         }
 
-                        // ★★★ 防空洗滌安全檢查：若雲端回傳 0 筆客戶但本機有資料，保留本機客戶 ★★★
+                        // ★★★ 智慧雙向客戶合併：以車牌為鍵值，絕不覆蓋本機剛剛編輯的資料 ★★★
                         if (Array.isArray(res.data.customers)) {
                             setCustomers(prev => {
                                 if (res.data.customers.length === 0 && prev.length > 0) {
                                     console.warn("⚠️ 雲端回傳 0 筆客戶，系統啟動安全防護，保留本機現有客戶資料！");
                                     return prev;
                                 }
-                                return res.data.customers;
+                                const map = new Map();
+                                res.data.customers.forEach(c => {
+                                    if (c && c.plate) map.set(String(c.plate).trim().toUpperCase(), c);
+                                });
+                                // 保留本機新增但雲端尚未讀取到的客戶
+                                prev.forEach(c => {
+                                    if (c && c.plate && !map.has(String(c.plate).trim().toUpperCase())) {
+                                        map.set(String(c.plate).trim().toUpperCase(), c);
+                                    }
+                                });
+                                return Array.from(map.values());
                             });
                         }
 
@@ -10023,11 +10050,12 @@ function handleSyncWorkforcePerformance(data) {
             };
 
             // ★★★ 安全設定儲存：若後端有舊邏輯，隨附過濾相片後的輕量工單以防被清空 ★★★
-            const saveSettingsToCloud = async (customCash = null, silent = false, updatedPin = null, customProfiles = null, customStaffList = null, customRows = null) => {
+            const saveSettingsToCloud = async (customCash = null, silent = false, updatedPin = null, customProfiles = null, customStaffList = null, customRows = null, customCustomers = null, customRecords = null) => {
                 setIsSavingSettings(true);
                 const pinToSave = updatedPin || currentPin;
                 const profilesToSave = customProfiles || staffProfiles;
                 const staffListToSave = customStaffList || staffList;
+                const customersToSave = customCustomers || customers;
 
                 // 產出分欄分行陣列（每位技師各獨立一行與欄位）
                 const rowsToSave = customRows || staffListToSave.map(name => {
@@ -10051,7 +10079,8 @@ function handleSyncWorkforcePerformance(data) {
                 saveToLocalSafe('moto_staffProfiles', profilesToSave);
 
                 // 建立輕量化安全工單備份（移除巨大 Base64 相片，避開 50,000 字元上限，確保舊版 GAS 不會清空工單）
-                const safeLightRecords = records.map(r => ({
+                const baseRecords = customRecords || records;
+                const safeLightRecords = baseRecords.map(r => ({
                     id: r.id, date: r.date, plate: r.plate, name: r.name, phone: r.phone,
                     bikeModel: r.bikeModel, mileage: r.mileage, total: r.total, status: r.status,
                     progressStage: r.progressStage, items: r.items
@@ -10065,7 +10094,7 @@ function handleSyncWorkforcePerformance(data) {
                     staffProfiles: profilesToSave,
                     staffProfilesRows: rowsToSave,
                     records: safeLightRecords, // ★ 隨附輕量工單，舊 GAS 也不會清空
-                    customers: customers,      // ★ 隨附客戶名冊，舊 GAS 也不會清空
+                    customers: customersToSave, // ★ 優先採用即時傳入的更新名冊
                     cashRecords: customCash || cashRecords,
                     adminPin: pinToSave
                 };
